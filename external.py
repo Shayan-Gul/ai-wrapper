@@ -1,33 +1,34 @@
 from mistralai import Mistral
+from google import genai
+from google.genai import types
 from dotenv import dotenv_values
-from typing import Iterable
 from random import choice
 import sqlite3
 import os
 from typing import Self, Any
-#from pprint import pprint as print
+import sys
 
 class Api_Manager:
 
     @staticmethod
-    def _initilise_api_keys_from_db(keys: Iterable[str]) -> tuple[str, str, bool]:
+    def _initilise_api_keys_from_db(keys: dict[str, str]) -> tuple[str, str, bool]:
         with Database("main.db") as db:
-            db.create_table("gemini_keys", {"id": "INT PRIMARY KEY", "Key": "TEXT NOT NULL", "Validity": "BOOL", "Wait_Time_Hours": "INT NOT NULL"})
-            all_keys = [(i, key, True, 0) for i, key in enumerate(keys)]
+            db.create_table("gemini_keys", {"id": "INT PRIMARY KEY", "key": "TEXT NOT NULL", "validity": "INTEGER", "Reset_Validity_Of_Key": "INTEGER NOT NULL"})
+            all_keys = [(i+1, api_key, True, 0) for i, api_key in enumerate(keys.values())]
             db.insert_batch_data("gemini_keys", tuple(all_keys))
 
-    def __init__(self, path_to_env):
-        self._keys = (dotenv_values(path_to_env).values())
-        self._initilise_api_keys_from_db(self._keys)
+    @staticmethod
+    def get_valid_keys_from_db() -> str | None:
+        with Database("main.db") as db:
+            db.con.row_factory = sqlite3.Row 
+            db.cur = db.con.cursor()
+            db.cur.execute("SELECT key FROM gemini_keys WHERE validity")
+            valid_random_key_entry = db.cur.fetchone()
+            valid_random_key = valid_random_key_entry["key"]
+            if valid_random_key: return valid_random_key
 
-    def get_valid_key(self) -> str | None:
-        valid_keys = [key for key, value in self._all_keys if value]
-        valid_key = choice(valid_keys)
-        if not valid_keys: print("No valid keys found"); return None
-        return valid_key
-
-    def invalidate_key(self, key):
-        self._all_keys[key] = False
+    def __init__(self, path_to_env: str):
+        self._initilise_api_keys_from_db(dotenv_values(path_to_env))
 
 class Database:
     def __init__(self, db_name: str):
@@ -67,6 +68,25 @@ class Database:
         if not data: raise ValueError(f"Warning: No data provided for insertion into '{table_name}'. Skipping."); return None
         self.cur.executemany(f"INSERT INTO {table_name} VALUES({", ".join(["?"] * len(data[0]))})", data)
 
+class Gemini_Ai:
+    def __init__(self, api: Api_Manager):
+        self.api = api
+        self.client: genai.Client = None
+
+    def prompt_the_ai(self, user_prompt) -> str:
+        if not self.client:
+            self.client = genai.Client(api_key=self.api.get_valid_keys_from_db())
+
+        response = self.client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=user_prompt,
+        config=types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_budget=0)
+        ),)
+
+        return response.text
+    
+    
 
 class Mistral_Ai:
     def __init__(self, api):
@@ -89,7 +109,9 @@ class Mistral_Ai:
     
 def main():
     if os.path.exists("main.db"):os.remove("main.db")
-    Api_Manager("gemini.env")
+    os.system("cls" if sys.platform.startswith('win') else "clear")
+    gemini = Gemini_Ai(Api_Manager("gemini.env"))
+    print(gemini.prompt_the_ai("Who are you? Be brief and short"))
 
 if __name__ == "__main__":
     main()
